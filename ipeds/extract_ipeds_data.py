@@ -1,10 +1,14 @@
-"""Extract IPEDS tables to tidy CSV files using a generated mapping."""
+"""Extract IPEDS tables or build wide panel slices using a generated mapping."""
 from __future__ import annotations
 
 import argparse
 import logging
+import re
+from collections import defaultdict
+from dataclasses import dataclass
+from functools import reduce
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import jaydebeapi
 import pandas as pd
@@ -20,7 +24,27 @@ from map_ipeds_vars import (
     determine_ucanaccess_lib,
 )
 
+try:
+    from ipeds import schema
+except ImportError:  # pragma: no cover - adjust path when executed as script
+    import sys
+    from pathlib import Path as _Path
+
+    package_root = _Path(__file__).resolve().parent.parent
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from ipeds import schema  # type: ignore
+
 DEFAULT_MAP_PATH = DEFAULT_OUT_ROOT / "ipeds_var_map_2004_2023.csv"
+
+
+@dataclass
+class BuildYearResult:
+    year: int
+    data: pd.DataFrame
+    canonical_sources: Dict[str, List[Tuple[str, str]]]
+    coverage: Dict[str, int]
+    finance_forms: Dict[str, str]
 
 
 def find_db_for_year(db_root: Path, year: int) -> Path | None:
@@ -117,6 +141,189 @@ def extract_table(
     output_path = out_dir / f"ipeds_{year}_{table_name}.csv"
     frame.to_csv(output_path, index=False)
     logging.info("Exported %s", output_path)
+
+
+SAFE_COLUMN_RX = re.compile(r"[^0-9A-Za-z]+")
+
+
+def canonicalize_title(value: str, *, default: str = "value") -> str:
+    canonical = SAFE_COLUMN_RX.sub("_", str(value).strip().lower()).strip("_")
+    return canonical or default
+
+
+def load_table_subset(
+    table_name: str,
+    columns: Sequence[str],
+    *,
+    year: int,
+    connection=None,
+    tables_csv_root: Optional[Path] = None,
+    primary_keys: Sequence[str] = ("UNITID",),
+) -> pd.DataFrame:
+    """Load a subset of columns from an IPEDS table via JDBC or CSV fallback."""
+    if tables_csv_root is not None:
+        csv_path = tables_csv_root / str(year) / f"{table_name}.csv"
+        if csv_path.exists():
+            try:
+                frame = pd.read_csv(csv_path, dtype=str)
+            except Exception as exc:  # pragma: no cover - defensive
+                logging.warning("Failed to read %s: %s", csv_path, exc)
+            else:
+                available = [col for col in columns if col in frame.columns]
+                keys = [key for key in primary_keys if key in frame.columns]
+                if not keys:
+                    logging.warning(
+                        "%s %s: primary keys %s missing in CSV fallback.",
+                        year,
+                        table_name,
+                        ", ".join(primary_keys),
+                    )
+                    return pd.DataFrame(columns=primary_keys)
+                subset = frame[[*keys, *available]].copy()
+                for key in keys:
+                    subset[key] = subset[key].astype(str)
+                return subset
+
+    if connection is None:
+        raise ValueError(
+            "A database connection is required when --tables-csv-root is not supplied or the table CSV is missing."
+        )
+
+    available_columns = fetch_table_columns(connection, table_name)
+    if not available_columns:
+        logging.warning("Skipping %s for %s: no columns found", table_name, year)
+        return pd.DataFrame(columns=primary_keys)
+
+    for key in primary_keys:
+        if key not in available_columns:
+            logging.warning("%s %s: %s not available; skipping table", year, table_name, key)
+            return pd.DataFrame(columns=primary_keys)
+
+    selected = list(primary_keys) + [col for col in columns if col in available_columns]
+    missing = [col for col in columns if col not in available_columns]
+    if missing:
+        logging.warning(
+            "%s %s: dropping %s missing columns", year, table_name, ", ".join(missing)
+        )
+
+    query = f"SELECT {', '.join(dict.fromkeys(selected))} FROM {table_name}"
+    frame = pd.read_sql_query(query, connection)
+    for key in primary_keys:
+        frame[key] = frame[key].astype(str)
+    return frame
+
+
+def build_wide_for_year(
+    mapping_df: pd.DataFrame,
+    year: int,
+    *,
+    connection=None,
+    tables_csv_root: Optional[Path] = None,
+    primary_keys: Sequence[str] = ("UNITID",),
+) -> BuildYearResult:
+    """Return canonical wide data, coverage, and finance form metadata for a year."""
+
+    years_numeric = pd.to_numeric(mapping_df["year"], errors="coerce")
+    mapping_year = mapping_df.loc[years_numeric == int(year)].copy()
+    if mapping_year.empty:
+        logging.warning("No mapping rows for %s; skipping wide build.", year)
+        empty = pd.DataFrame(columns=[*primary_keys])
+        return BuildYearResult(year, empty, {}, {}, {})
+
+    mapping_year = mapping_year.fillna("")
+    mapping_year = mapping_year[mapping_year["canonical"].astype(bool)]
+    if mapping_year.empty:
+        logging.warning("No canonical mappings available for %s.", year)
+        empty = pd.DataFrame(columns=[*primary_keys])
+        return BuildYearResult(year, empty, {}, {}, {})
+
+    table_requirements: Dict[str, Set[str]] = defaultdict(set)
+    for table_name, var_name in mapping_year[["tableName", "varName"]].itertuples(index=False):
+        table_requirements[str(table_name)].add(str(var_name))
+
+    table_frames: Dict[str, pd.DataFrame] = {}
+    for table_name, var_names in table_requirements.items():
+        subset = load_table_subset(
+            table_name,
+            sorted(var_names),
+            year=year,
+            connection=connection,
+            tables_csv_root=tables_csv_root,
+            primary_keys=primary_keys,
+        )
+        if subset.empty:
+            logging.debug("%s %s: table returned no rows", year, table_name)
+        table_frames[table_name] = subset
+
+    wide_df: Optional[pd.DataFrame] = None
+    canonical_sources: Dict[str, List[Tuple[str, str]]] = defaultdict(list)
+    coverage: Dict[str, int] = {}
+    finance_forms_map: Dict[str, Set[str]] = defaultdict(set)
+
+    for canonical, group in mapping_year.groupby("canonical"):
+        partitions: List[pd.DataFrame] = []
+        for _, row in group.iterrows():
+            table_name = str(row["tableName"])
+            var_name = str(row["varName"])
+            table_df = table_frames.get(table_name)
+            if table_df is None or table_df.empty:
+                continue
+            if var_name not in table_df.columns:
+                logging.debug("%s %s.%s not present in table", year, table_name, var_name)
+                continue
+            subset = table_df[[*primary_keys, var_name]].copy()
+            subset = subset.rename(columns={var_name: canonical})
+            partitions.append(subset)
+            canonical_sources[canonical].append((table_name, var_name))
+
+            form = schema.finance_form_from_table(table_name)
+            if form:
+                non_null_units = subset.loc[subset[canonical].notna(), primary_keys[0]]
+                for unit in non_null_units.astype(str):
+                    finance_forms_map[unit].add(form)
+
+        if not partitions:
+            continue
+
+        combined = partitions[0]
+        for extra in partitions[1:]:
+            combined = combined.merge(extra, on=list(primary_keys), how="outer", suffixes=("", "__dup"))
+            dup_col = f"{canonical}__dup"
+            if dup_col in combined.columns:
+                combined[canonical] = combined[canonical].combine_first(combined.pop(dup_col))
+
+        combined = combined.drop_duplicates(subset=list(primary_keys))
+        combined = combined[[*primary_keys, canonical]]
+        coverage[canonical] = int(combined[canonical].notna().sum())
+
+        if wide_df is None:
+            wide_df = combined
+        else:
+            wide_df = wide_df.merge(combined, on=list(primary_keys), how="outer")
+
+    if wide_df is None:
+        logging.warning("No tables produced wide data for %s.", year)
+        empty = pd.DataFrame(columns=[*primary_keys])
+        return BuildYearResult(year, empty, dict(canonical_sources), coverage, {})
+
+    primary_key = primary_keys[0]
+    wide_df[primary_key] = wide_df[primary_key].astype(str)
+
+    resolved_forms: Dict[str, str] = {}
+    if finance_forms_map:
+        priority = {"F1": 0, "F2": 1, "F3": 2}
+        for unitid, forms in finance_forms_map.items():
+            resolved = sorted(forms, key=lambda form: priority.get(form, 99))
+            if resolved:
+                resolved_forms[unitid] = resolved[0]
+
+    return BuildYearResult(
+        year=year,
+        data=wide_df,
+        canonical_sources=dict(canonical_sources),
+        coverage=coverage,
+        finance_forms=resolved_forms,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

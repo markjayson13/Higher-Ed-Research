@@ -1,2 +1,133 @@
-# Add one variable title per line.
-Tuition and fees - Total
+Institution (entity) name
+Institution name alias
+Street address or post office box
+City location of institution
+State abbreviation
+ZIP code
+County name
+State and 118TH Congressional District ID
+Longitude location of institution
+Latitude location of institution
+Institution open to the general public
+Status of institution
+UNITID for merged schools
+Year institution was deleted from IPEDS
+Institution is active in current year
+Primarily postsecondary indicator
+Postsecondary institution indicator
+Postsecondary and Title IV institution indicator
+Natural Disaster identification
+Status of IC component when institution was migrated
+Response status - Institutional characteristics component
+Type of imputation method Institutional Characteristics
+Revision status - Institutional Characteristics
+Multi-institution or multi-campus organization
+Identification number of multi-institution or multi-campus organization
+Name of multi-institution or multi-campus organization
+Employer Identification Number
+Unique Entity Identifier (UEI) Numbers
+Office of Postsecondary Education (OPE) ID Number
+OPE Title IV eligibility indicator code
+Core Based Statistical Area (CBSA)
+CBSA Type Metropolitan or Micropolitan
+Combined Statistical Area (CSA)
+Fips County code
+FIPS state code
+Bureau of Economic Analysis (BEA) regions
+Published tuition and fees 2023-24
+Published out-of-state tuition and fees 2023-24
+Books and supplies 2023-24
+Total price for in-district students living on campus 2023-24
+Total price for in-district students living off campus (not with family) 2023-24
+Total price for in-state students living on campus 2023-24
+Total price for in-state students living off campus (not with family) 2023-24
+Total price for out-of-state students living on campus 2023-24
+Total price for out-of-state students living off campus (not with family) 2023-24
+Off campus (with family), other expenses 2023-24
+Off campus (not with family), other expenses 2023-24
+Tuition and fees (net of allowance reported in Part C, line 08)
+Net tuition and fees
+Pell grants (federal)
+Other federal grants
+Grants by state government
+Grants by local government
+Institutional grants (restricted)
+Institutional grants (unrestricted)
+Total revenue that funds scholarships and fellowships
+Discounts and allowances applied to tuition and fees
+Discounts and allowances applied to auxiliary enterprise revenues
+Total discounts and allowances
+Sales and services of auxiliary enterprises (net)
+Private gifts, grants, and contracts
+Other revenue (calculated)
+Instruction — Current year total
+Instruction — Salaries and wages
+Research — Current year total
+Research — Salaries and wages
+Public service — Current year total
+Public service — Salaries and wages
+Academic support — Current year total
+Academic support — Salaries and wages
+Student services — Current year total
+Student services — Salaries and wages
+Institutional support — Current year total
+Institutional support — Salaries and wages
+Auxiliary enterprises — Current year total
+Auxiliary enterprises — Salaries and wages
+Net grant aid to students, net of discount/allowances — Current year total
+Hospital services — Current year total
+Independent operations — Current year total
+Other Functional Expenses and deductions — Current year total
+Total expenses and Deductions
+Value of endowment net assets at the beginning of the fiscal year
+Value of endowment net assets at the end of the fiscal year
+Change in value of endowment net assets
+New gifts and additions
+Endowment net investment return
+Spending distribution for current use
+Other
+Federal appropriations
+State appropriations
+Local appropriations
+Federal grants and contracts (Do not include FDSL)
+State grants and contracts
+Local government grants and contracts
+Private gifts, grants and contracts
+Private gifts
+Private grants and contracts
+Contributions from affiliated entities
+Investment return
+Sales and services of educational activities
+Sales and services of auxiliary enterprises (net of allowance reported in Part C, line 09)
+Hospital revenue
+Independent operations revenue
+Other revenue
+Total revenues and investment return
+Net assets released from restriction
+Net total revenues, after assets released from restriction
+Average net price for full-time, first-time degree/certificate-seeking undergraduates awarded Title IV federal financial aid, 2022-23
+Average net price (income $0–$30,000) awarded Title IV federal financial aid, 2022-23
+Average net price (income $30,001–$48,000) awarded Title IV federal financial aid, 2022-23
+Average net price (income $48,001–$75,000) awarded Title IV federal financial aid, 2022-23
+Average net price (income $75,001–$110,000) awarded Title IV federal financial aid, 2022-23
+Average net price (income >$110,000) awarded Title IV federal financial aid, 2022-23
+Average net price for students paying the in-state or in-district tuition rate (public institutions), 2022-23
+Total 12-month unduplicated headcount
+12-month full-time equivalent enrollment
+Full-time 12-month unduplicated headcount
+Part-time 12-month unduplicated headcount
+First-time degree/certificate-seeking undergraduate 12-month unduplicated headcount
+Undergraduate 12-month unduplicated headcount
+Graduate 12-month unduplicated headcount
+Institution size category
+Total fall enrollment
+Part-time fall enrollment
+Full-time equivalent fall enrollment
+Undergraduate fall enrollment — full-time
+Undergraduate fall enrollment — part-time
+Graduate fall enrollment — part-time
+Average salary equated to 9 months of full-time instructional staff — all ranks
+Average salary equated to 9 months of full-time instructional staff — professors
+Average salary equated to 9 months of full-time instructional staff — associate professors
+Average salary equated to 9 months of full-time instructional staff — assistant professors
+Average salary equated to 9 months of full-time instructional staff — instructors

@@ -18,6 +18,17 @@ from typing import Dict, List, Sequence, Tuple
 import jaydebeapi
 from rapidfuzz import fuzz, process
 
+try:
+    from ipeds import schema
+except ImportError:  # pragma: no cover - adjust path when executed as script
+    import sys
+    from pathlib import Path as _Path
+
+    package_root = _Path(__file__).resolve().parent.parent
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from ipeds import schema  # type: ignore
+
 # Workspace defaults
 DEFAULT_WORKSPACE = Path("/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace")
 DEFAULT_DB_ROOT = DEFAULT_WORKSPACE / "IPEDS COMPLETE DATABASE"
@@ -43,9 +54,20 @@ def infer_year_from_db(db_path: Path) -> int:
 @dataclass
 class VarRecord:
     year: int
+    canonical: str
     table_name: str
     var_name: str
     var_title: str
+    matched_title: str
+    match_kind: str  # exact, alias, fuzzy
+
+
+@dataclass
+class MissingInfo:
+    year: int
+    canonical: str
+    requested_title: str
+    suggestions: List[str]
 
 
 def parse_years(years: str | None) -> List[int]:
@@ -84,6 +106,28 @@ def read_titles(path: Path) -> List[str]:
     if not titles:
         logging.warning("No titles found in %s", path)
     return titles
+
+
+def determine_requested_canonicals(titles: Sequence[str]) -> Tuple[List[str], Dict[str, str]]:
+    """Return ordered canonical column list and mapping to requested titles."""
+    canonical_map: Dict[str, str] = {}
+    for title in titles:
+        canonical = schema.canonical_for_title(title)
+        if not canonical:
+            logging.warning("Unrecognized title (no canonical mapping): %s", title)
+            continue
+        if schema.group_for_canonical(canonical) == "flags":
+            # Derived columns do not require direct mapping.
+            continue
+        canonical_map.setdefault(canonical, title)
+    requested = [
+        canonical
+        for canonical in schema.canonical_columns()
+        if canonical in canonical_map and schema.group_for_canonical(canonical) != "flags"
+    ]
+    if not requested:
+        logging.warning("No canonical titles were recognized from the provided list.")
+    return requested, canonical_map
 
 
 def read_env_file(env_path: Path) -> Dict[str, str]:
@@ -178,15 +222,25 @@ def fetch_vartable_records(cursor, table_name: str) -> List[Tuple[str, str, str]
 
 def map_titles_for_year(
     year: int,
-    titles: Sequence[str],
+    canonicals: Sequence[str],
+    canonical_request_map: Dict[str, str],
     db_dir: Path,
     classpath: Sequence[str],
     use_fuzzy: bool,
-) -> Tuple[List[VarRecord], List[Tuple[int, str]]]:
+) -> Tuple[List[VarRecord], List[MissingInfo]]:
     db_path = get_database_path(db_dir, year)
     if not db_path:
         logging.warning("Database for %s not found in %s", year, db_dir)
-        return [], [(year, title) for title in titles]
+        missing_entries = [
+            MissingInfo(
+                year=year,
+                canonical=canonical,
+                requested_title=canonical_request_map.get(canonical, canonical),
+                suggestions=[],
+            )
+            for canonical in canonicals
+        ]
+        return [], missing_entries
 
     vartable_name = f"VARTABLE{year % 100:02d}"
     try:
@@ -195,101 +249,178 @@ def map_titles_for_year(
             records = fetch_vartable_records(cursor, vartable_name)
     except jaydebeapi.DatabaseError as exc:
         logging.error("Failed to query %s in %s: %s", vartable_name, db_path, exc)
-        return [], [(year, title) for title in titles]
+        missing_entries = [
+            MissingInfo(
+                year=year,
+                canonical=canonical,
+                requested_title=canonical_request_map.get(canonical, canonical),
+                suggestions=[],
+            )
+            for canonical in canonicals
+        ]
+        return [], missing_entries
 
     by_title: Dict[str, List[VarRecord]] = defaultdict(list)
     for table_name, var_name, var_title in records:
-        record = VarRecord(year=year, table_name=table_name, var_name=var_name, var_title=var_title)
+        record = VarRecord(
+            year=year,
+            canonical="",
+            table_name=table_name,
+            var_name=var_name,
+            var_title=var_title,
+            matched_title=var_title,
+            match_kind="",
+        )
         by_title[var_title].append(record)
 
-    found_records: List[VarRecord] = []
-    missing: List[Tuple[int, str]] = []
+    normalized_to_titles: Dict[str, List[str]] = defaultdict(list)
+    for actual_title in by_title.keys():
+        normalized_to_titles[schema.normalize_title(actual_title)].append(actual_title)
 
-    if use_fuzzy:
-        unique_titles = list(by_title)
-        for title in titles:
+    found_records: Dict[Tuple[str, str], VarRecord] = {}
+    missing_records: List[MissingInfo] = []
+
+    available_titles = list(by_title.keys())
+
+    for canonical in canonicals:
+        requested_title = canonical_request_map.get(canonical, canonical)
+        aliases = list(schema.aliases_for_canonical(canonical))
+        if requested_title and requested_title not in aliases:
+            aliases.insert(0, requested_title)
+        normalized_aliases = [schema.normalize_title(alias) for alias in aliases]
+
+        collected_for_canonical: Dict[Tuple[str, str], VarRecord] = {}
+
+        # Direct alias matching (normalized).
+        for alias, normalized in zip(aliases, normalized_aliases):
+            candidate_titles = normalized_to_titles.get(normalized, [])
+            for matched_title in candidate_titles:
+                for record in by_title[matched_title]:
+                    key = (record.table_name, record.var_name)
+                    if key in collected_for_canonical:
+                        continue
+                    collected_for_canonical[key] = VarRecord(
+                        year=year,
+                        canonical=canonical,
+                        table_name=record.table_name,
+                        var_name=record.var_name,
+                        var_title=record.var_title,
+                        matched_title=matched_title,
+                        match_kind="alias" if alias != matched_title else "exact",
+                    )
+
+        suggestions: List[str] = []
+        # Fuzzy fallback if nothing matched and allowed.
+        if not collected_for_canonical and use_fuzzy and available_titles:
+            query = requested_title or aliases[0] if aliases else canonical
             matches = process.extract(
-                title,
-                unique_titles,
+                query,
+                available_titles,
                 scorer=fuzz.token_set_ratio,
                 score_cutoff=FUZZY_THRESHOLD,
+                limit=5,
             )
-            if not matches:
-                missing.append((year, title))
-                continue
-            for matched_title, score, _ in matches:
-                found_records.extend(by_title[matched_title])
-                logging.debug(
-                    "Fuzzy match (%s) → (%s) with score %s for %s",
-                    title,
-                    matched_title,
-                    score,
-                    year,
+            suggestions = [match[0] for match in matches]
+            if matches:
+                best_title, score, _ = matches[0]
+                for record in by_title[best_title]:
+                    key = (record.table_name, record.var_name)
+                    if key in collected_for_canonical:
+                        continue
+                    collected_for_canonical[key] = VarRecord(
+                        year=year,
+                        canonical=canonical,
+                        table_name=record.table_name,
+                        var_name=record.var_name,
+                        var_title=record.var_title,
+                        matched_title=best_title,
+                        match_kind="fuzzy",
+                    )
+
+        if not collected_for_canonical:
+            missing_records.append(
+                MissingInfo(
+                    year=year,
+                    canonical=canonical,
+                    requested_title=requested_title,
+                    suggestions=suggestions,
                 )
-    else:
-        for title in titles:
-            matches = by_title.get(title)
-            if not matches:
-                missing.append((year, title))
-            else:
-                found_records.extend(matches)
+            )
+            continue
 
-    unique: Dict[Tuple[str, str], VarRecord] = {}
-    for record in found_records:
-        unique[(record.table_name, record.var_name)] = record
+        for key, record in collected_for_canonical.items():
+            if key not in found_records:
+                found_records[key] = record
 
-    return list(unique.values()), missing
+    return list(found_records.values()), missing_records
 
 
 def write_mapping_csv(records: Sequence[VarRecord], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["year", "tableName", "varName", "varTitle"])
+        writer.writerow(
+            ["year", "canonical", "tableName", "varName", "varTitle", "matchedTitle", "matchKind"]
+        )
         for record in sorted(
             records,
-            key=lambda item: (item.year, item.table_name.lower(), item.var_name.lower()),
+            key=lambda item: (
+                item.year,
+                item.canonical,
+                item.table_name.lower(),
+                item.var_name.lower(),
+            ),
         ):
-            writer.writerow([record.year, record.table_name, record.var_name, record.var_title])
+            writer.writerow(
+                [
+                    record.year,
+                    record.canonical,
+                    record.table_name,
+                    record.var_name,
+                    record.var_title,
+                    record.matched_title,
+                    record.match_kind,
+                ]
+            )
 
 
-def write_missing_csv(missing: Sequence[Tuple[int, str]], output_path: Path) -> None:
+def write_missing_csv(missing: Sequence[MissingInfo], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["year", "requestedTitle"])
-        for year, title in sorted(missing, key=lambda item: (item[0], item[1].lower())):
-            writer.writerow([year, title])
+        writer.writerow(["year", "canonical", "requestedTitle", "suggestions"])
+        for info in sorted(
+            missing, key=lambda item: (item.year, item.canonical, item.requested_title.lower())
+        ):
+            writer.writerow(
+                [
+                    info.year,
+                    info.canonical,
+                    info.requested_title,
+                    "; ".join(info.suggestions),
+                ]
+            )
 
 
 def write_sql_template(records: Sequence[VarRecord], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    grouped: Dict[Tuple[int, str], List[str]] = defaultdict(list)
+    grouped: Dict[Tuple[int, str, str], List[str]] = defaultdict(list)
     for record in records:
-        key = (record.year, record.table_name)
+        key = (record.year, record.table_name, record.canonical)
         grouped[key].append(record.var_name)
 
     with output_path.open("w", encoding="utf-8") as handle:
-        for (year, table_name), var_names in sorted(grouped.items()):
+        for (year, table_name, canonical), var_names in sorted(grouped.items()):
             ordered_vars = sorted(dict.fromkeys(var_names), key=str.lower)
             columns = ", ".join([f"{year} AS year", "UNITID", *ordered_vars])
             handle.write(
-                f"SELECT {columns}\nFROM {table_name}; -- {year}\n\n"
+                f"SELECT {columns}\nFROM {table_name}; -- {year} canonical={canonical}\n\n"
             )
 
 
 def configure_logging(verbose: bool) -> None:
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(levelname)s: %(message)s")
-
-
-def perform_self_test(records: Sequence[VarRecord], titles: Sequence[str]) -> None:
-    sentinel = "tuition and fees - total"
-    if any(sentinel in title.lower() for title in titles):
-        if not any(sentinel in record.var_title.lower() for record in records):
-            raise RuntimeError(
-                "Self-test failed: expected to find a mapping for 'Tuition and fees - Total'."
-            )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -345,18 +476,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         import pandas as pd  # local import to make mode explicit
 
-        rows = []
+        requested_canonicals, canonical_request_map = determine_requested_canonicals(titles)
+        if not requested_canonicals:
+            raise SystemExit("No recognizable canonical titles were provided.")
+
         years = parse_years(args.years)
         if not years:
             logging.error("No valid years were provided.")
             return 1
-        processed_years = []
-        total_hits = 0
+
+        all_records: Dict[Tuple[int, str, str], VarRecord] = {}
+        all_missing: List[MissingInfo] = []
+
         for year in years:
             yy = f"{year}"[-2:]
             csv_path = csv_root / str(year) / f"VARTABLE{yy}.csv"
             if not csv_path.exists():
-                print(f"[WARN] Missing {csv_path} — skipping {year}")
+                logging.warning("Missing %s — skipping %s", csv_path, year)
                 continue
             try:
                 df = pd.read_csv(csv_path, dtype=str).fillna("")
@@ -367,43 +503,73 @@ def main(argv: Sequence[str] | None = None) -> int:
                 missing_cols = required - set(df.columns)
                 raise SystemExit(f"{csv_path} is missing columns: {missing_cols}")
 
-            hit = df[df["varTitle"].isin(titles)].copy()
-            if hit.empty:
-                print(f"[INFO] No matches in {csv_path.name}")
-                processed_years.append(year)
-                continue
-            hit.insert(0, "year", year)
-            sub = hit[["year", "tableName", "varName", "varTitle"]]
-            rows.append(sub)
-            total_hits += len(sub)
-            processed_years.append(year)
+            df["normalized"] = df["varTitle"].apply(schema.normalize_title)
+            available_titles = df["varTitle"].tolist()
 
-        if not rows:
+            for canonical in requested_canonicals:
+                aliases = schema.normalized_aliases_for_canonical(canonical)
+                matches = df[df["normalized"].isin(aliases)].copy()
+                match_kind = "alias"
+                suggestions: List[str] = []
+
+                if matches.empty and args.fuzzy and available_titles:
+                    query = canonical_request_map.get(canonical, canonical)
+                    fuzzy_matches = process.extract(
+                        query,
+                        available_titles,
+                        scorer=fuzz.token_set_ratio,
+                        score_cutoff=FUZZY_THRESHOLD,
+                        limit=5,
+                    )
+                    suggestions = [title for title, _score, _ in fuzzy_matches]
+                    if fuzzy_matches:
+                        best_title = fuzzy_matches[0][0]
+                        matches = df[df["varTitle"] == best_title].copy()
+                        match_kind = "fuzzy"
+
+                if matches.empty:
+                    all_missing.append(
+                        MissingInfo(
+                            year=year,
+                            canonical=canonical,
+                            requested_title=canonical_request_map.get(canonical, canonical),
+                            suggestions=suggestions,
+                        )
+                    )
+                    continue
+
+                for _, row in matches.iterrows():
+                    key = (year, str(row["tableName"]), str(row["varName"]))
+                    if key in all_records:
+                        continue
+                    all_records[key] = VarRecord(
+                        year=year,
+                        canonical=canonical,
+                        table_name=str(row["tableName"]),
+                        var_name=str(row["varName"]),
+                        var_title=str(row["varTitle"]),
+                        matched_title=str(row["varTitle"]),
+                        match_kind=match_kind,
+                    )
+
+        if not all_records:
             raise SystemExit(
                 "No mappings found in CSV fallback. Check titles and exported VARTABLE##.csv files."
             )
 
-        out = pd.concat(rows, ignore_index=True).drop_duplicates().sort_values([
-            "year", "tableName", "varName"
-        ])
+        records = list(all_records.values())
+        mapping_path = out_dir / "ipeds_var_map_2004_2023.csv"
+        write_mapping_csv(records, mapping_path)
+        write_sql_template(records, out_dir / "ipeds_extract_sql_2004_2023.sql")
+        write_missing_csv(all_missing, out_dir / "missing_titles_2004_2023.csv")
 
-        map_csv = out_dir / "ipeds_var_map_2004_2023.csv"
-        out.to_csv(map_csv, index=False)
-
-        # Optional SQL template mirroring JDBC mode naming
-        sql_out = out_dir / "ipeds_extract_sql_2004_2023.sql"
-        with sql_out.open("w", encoding="utf-8") as f:
-            for (year, table), g in out.groupby(["year", "tableName"]):
-                cols = ",\n  ".join(sorted(set(g["varName"])) )
-                f.write(
-                    f"-- year {year}, table {table}\nSELECT\n  {year} AS year,\n  UNITID,\n  {cols}\nFROM {table};\n\n"
-                )
-
-        # Summary and exit
-        print("[OK] Wrote mapping:", map_csv)
-        print(
-            f"[SUMMARY] years processed={len(processed_years)}, titles requested={len(titles)}, "
-            f"rows written={len(out)}, distinct mappings={out.drop(columns=['varTitle']).drop_duplicates().shape[0]}"
+        logging.info("CSV fallback mapping written: %s", mapping_path)
+        logging.info(
+            "Summary: years=%s, canonical count=%s, total mappings=%s, missing entries=%s",
+            len(years),
+            len(requested_canonicals),
+            len(records),
+            len(all_missing),
         )
         return 0
 
@@ -412,9 +578,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not years:
         logging.error("No valid years were provided.")
         return 1
-    titles = read_titles(titles_path)
-    if not titles:
+    raw_titles = read_titles(titles_path)
+    if not raw_titles:
         raise SystemExit(f"No titles found in {titles_path}")
+
+    requested_canonicals, canonical_request_map = determine_requested_canonicals(raw_titles)
+    if not requested_canonicals:
+        raise SystemExit("No recognizable canonical titles were provided.")
 
     script_dir = Path(__file__).resolve().parent
     lib_dir = determine_ucanaccess_lib(args.ucanaccess_lib, script_dir)
@@ -429,12 +599,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.info("  ucanaccess-lib: %s", lib_dir)
 
     all_records: List[VarRecord] = []
-    all_missing: List[Tuple[int, str]] = []
+    all_missing: List[MissingInfo] = []
 
     for year in years:
         logging.info("Processing %s", year)
-        records, missing = map_titles_for_year(year, titles, db_dir, classpath, args.fuzzy)
-        logging.info("%s: requested=%s, found=%s, missing=%s", year, len(titles), len(records), len(missing))
+        records, missing = map_titles_for_year(
+            year,
+            requested_canonicals,
+            canonical_request_map,
+            db_dir,
+            classpath,
+            args.fuzzy,
+        )
+        logging.info(
+            "%s: requested=%s, found=%s, missing=%s",
+            year,
+            len(requested_canonicals),
+            len(records),
+            len(missing),
+        )
         all_records.extend(records)
         all_missing.extend(missing)
 
@@ -451,17 +634,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     total_missing = len(all_missing)
     logging.info(
         "Summary: years=%s, titles requested per year=%s, total found=%s, total missing=%s",
-        len(years), len(titles), total_found, total_missing,
+        len(years),
+        len(requested_canonicals),
+        total_found,
+        total_missing,
     )
-    return 0
-
-    perform_self_test(all_records, titles)
-
-    logging.info("Wrote mapping to %s", mapping_path)
-    logging.info("Wrote SQL template to %s", sql_path)
-    logging.info("Wrote missing titles to %s", missing_path)
-    logging.info("Done")
-
     return 0
 
 
