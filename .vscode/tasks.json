@@ -2,46 +2,38 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Panelize (JDBC)",
+      "label": "IPEDS: Panelize (JDBC)",
       "type": "shell",
       "command": "bash",
       "args": [
         "-lc",
         "cd '${workspaceFolder}' && source .venv/bin/activate && \
-         python3 ipeds/map_ipeds_vars.py \
-           --db-dir \"/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1\" \
-           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\" \
-           --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
-           --years 2004-2023 \
-           --ucanaccess-lib \"/Users/markjaysonfarol13/lib/ucanaccess\" && \
          python3 ipeds/panelize.py \
-           --years 2004-2023 \
-           --db-dir \"/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1\" \
-           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\" \
+           --db-root \"/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS COMPLETE DATABASE\" \
+           --out-root \"/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/PANELS\" \
            --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
-           --ucanaccess-lib \"/Users/markjaysonfarol13/lib/ucanaccess\""
+           --years 2004-2023 \
+           --ucanaccess-lib \"/Users/markjaysonfarol13/lib/ucanaccess\" \
+           --mode jdbc"
       ],
       "problemMatcher": []
     },
     {
-      "label": "Panelize (CSV fallback)",
+      "label": "IPEDS: Panelize (CSV fallback)",
       "type": "shell",
       "command": "bash",
       "args": [
         "-lc",
         "cd '${workspaceFolder}' && source .venv/bin/activate && \
-         python3 ipeds/map_ipeds_vars.py \
-           --csv-vartable-root \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/exports\" \
-           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\" \
-           --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
-           --years 2004-2023 && \
          python3 ipeds/panelize.py \
+           --db-root \"/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS COMPLETE DATABASE\" \
+           --out-root \"/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/PANELS\" \
+           --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
            --years 2004-2023 \
-           --db-dir \"/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1\" \
-           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\""
+           --mode csvmeta \
+           --csv-vartable-root \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/exports\""
       ],
       "problemMatcher": []
     }
   ]
 }
-

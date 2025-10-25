@@ -10,15 +10,34 @@ import jaydebeapi
 import pandas as pd
 
 from map_ipeds_vars import (
-    DEFAULT_DB_DIR,
-    DEFAULT_OUT_DIR,
+    DEFAULT_WORKSPACE,
+    DEFAULT_DB_ROOT,
+    DEFAULT_OUT_ROOT,
     DEFAULT_TITLES,
+    YEAR_RX,
     collect_jars,
     connect_to_database,
     determine_ucanaccess_lib,
 )
 
-DEFAULT_MAP_PATH = DEFAULT_OUT_DIR / "ipeds_var_map_2004_2023.csv"
+DEFAULT_MAP_PATH = DEFAULT_OUT_ROOT / "ipeds_var_map_2004_2023.csv"
+
+
+def find_db_for_year(db_root: Path, year: int) -> Path | None:
+    """Search recursively for IPEDSYYYYMM.accdb (preferred) or IPEDSYYYYMM.mdb for a given year."""
+    for path in db_root.rglob("IPEDS*.accdb"):
+        m = YEAR_RX.search(path.name)
+        if not m:
+            continue
+        if int(m.group(1)[:4]) == year:
+            return path.resolve()
+    # Fallback to .mdb by scanning digits
+    for path in db_root.rglob("IPEDS*.mdb"):
+        name = path.name
+        digits = ''.join(ch for ch in name if ch.isdigit())
+        if len(digits) >= 6 and int(digits[:4]) == year:
+            return path.resolve()
+    return None
 
 
 def parse_years(years: str | None, fallback_year: int | None = None) -> List[int]:
@@ -102,7 +121,7 @@ def extract_table(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
+    parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_ROOT, help="Directory with IPEDS databases")
     parser.add_argument("--year", type=int, required=False, help="Year to extract (used if --years omitted)")
     parser.add_argument(
         "--years",
@@ -113,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--map-csv", type=Path, default=DEFAULT_MAP_PATH, help="Mapping CSV path")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory")
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_ROOT, help="Output directory")
     parser.add_argument(
         "--tables",
         type=str,
@@ -137,6 +156,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Resolve common paths and echo configuration
     out_dir = args.out_dir.expanduser().resolve()
+    # Ensure defaults and selected out dir exist
+    try:
+        DEFAULT_OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise SystemExit(f"Cannot create output root {DEFAULT_OUT_ROOT}: {exc}")
     out_dir.mkdir(parents=True, exist_ok=True)
     map_csv = args.map_csv.expanduser().resolve()
     script_dir = Path(__file__).resolve().parent
@@ -170,15 +194,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             logging.warning("No tables to export for %s", year)
             continue
 
-        db_path = db_dir / f"IPEDS{year}.accdb"
-        if not db_path.exists():
-            alternative = db_dir / f"IPEDS{year}.mdb"
-            if alternative.exists():
-                db_path = alternative
-            else:
-                logging.error("Database for %s not found in %s", year, db_dir)
-                continue
-        db_path = db_path.resolve()
+        db_path = find_db_for_year(db_dir, year)
+        if not db_path:
+            logging.error(
+                "Database for %s not found under %s (expected IPEDSYYYYMM.accdb/.mdb)",
+                year,
+                db_dir,
+            )
+            continue
 
         with connect_to_database(db_path, classpath) as connection:
             for table_name, columns in sorted(mapping.items()):

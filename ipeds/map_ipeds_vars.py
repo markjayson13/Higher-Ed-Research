@@ -12,18 +12,32 @@ import os
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Dict, List, Sequence, Tuple
 
 import jaydebeapi
 from rapidfuzz import fuzz, process
 
-# Defaults aligned to the user's real environment
-DEFAULT_DB_DIR = Path("/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1")
-DEFAULT_OUT_DIR = Path("/Users/markjaysonfarol13/Higher Ed research/Output")
+# Workspace defaults
+DEFAULT_WORKSPACE = Path("/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace")
+DEFAULT_DB_ROOT = DEFAULT_WORKSPACE / "IPEDS COMPLETE DATABASE"
+DEFAULT_OUT_ROOT = DEFAULT_WORKSPACE / "PANELS"
 DEFAULT_TITLES = Path("/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt")
 DEFAULT_UCAN = Path("/Users/markjaysonfarol13/lib/ucanaccess")
 DEFAULT_YEARS = tuple(range(2004, 2024))
 FUZZY_THRESHOLD = 90
+
+# Year inference from DB filename, e.g., IPEDS200405.accdb → 2004
+YEAR_RX = re.compile(r"IPEDS(\d{6})\.accdb$", re.IGNORECASE)
+
+
+def infer_year_from_db(db_path: Path) -> int:
+    """Map IPEDSYYYYMM.accdb → start year (YYYY)."""
+    m = YEAR_RX.search(db_path.name)
+    if not m:
+        raise ValueError(f"Cannot infer year from filename: {db_path.name}")
+    yyyymm = m.group(1)
+    return int(yyyymm[:4])
 
 
 @dataclass
@@ -124,14 +138,25 @@ def collect_jars(lib_dir: Path) -> List[str]:
 
 
 def get_database_path(db_dir: Path, year: int) -> Path | None:
-    """Return the Access database path for the given year, if it exists."""
-    candidates = [
-        db_dir / f"IPEDS{year}.accdb",
-        db_dir / f"IPEDS{year}.mdb",
-    ]
-    for candidate in candidates:
+    """Return the Access database path for the given year by searching common layouts."""
+    # Direct names first
+    for candidate in [db_dir / f"IPEDS{year}.accdb", db_dir / f"IPEDS{year}.mdb"]:
         if candidate.exists():
             return candidate.resolve()
+    # Recursive search for IPEDSYYYYMM.accdb
+    for path in db_dir.rglob("IPEDS*.accdb"):
+        try:
+            y = infer_year_from_db(path)
+        except Exception:
+            continue
+        if y == year:
+            return path.resolve()
+    # Fallback for .mdb by scanning digits
+    for path in db_dir.rglob("IPEDS*.mdb"):
+        name = path.name
+        digits = ''.join(ch for ch in name if ch.isdigit())
+        if len(digits) >= 6 and int(digits[:4]) == year:
+            return path.resolve()
     return None
 
 
@@ -269,8 +294,8 @@ def perform_self_test(records: Sequence[VarRecord], titles: Sequence[str]) -> No
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory to store outputs")
+    parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_ROOT, help="Directory with IPEDS databases")
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_ROOT, help="Directory to store outputs")
     parser.add_argument("--years", type=str, default=None, help="Comma-separated years or ranges (e.g., 2004-2006,2010)")
     parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES, help="Path to file listing variable titles")
     parser.add_argument("--fuzzy", action="store_true", help="Enable fuzzy title matching with RapidFuzz")
@@ -297,6 +322,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     # Resolve common paths and echo configuration
     titles_path = args.titles.expanduser().resolve()
     out_dir = args.out_dir.expanduser().resolve()
+    # Ensure defaults and selected out dir exist
+    try:
+        DEFAULT_OUT_ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise SystemExit(f"Cannot create output root {DEFAULT_OUT_ROOT}: {exc}")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # CSV fallback mode (no Java/JDBC needed)

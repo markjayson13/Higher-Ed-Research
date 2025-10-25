@@ -1,19 +1,21 @@
-"""Panelize IPEDS: mapping once, extract per-year tables, optionally build a panel CSV."""
+"""Panelize IPEDS: discover DBs, map titles, extract per-year tables, build a panel CSV."""
 from __future__ import annotations
 
 import argparse
 import logging
 import re
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Sequence, Set
 
 import pandas as pd
 
 from map_ipeds_vars import (
-    DEFAULT_DB_DIR,
-    DEFAULT_OUT_DIR,
+    DEFAULT_WORKSPACE,
+    DEFAULT_DB_ROOT,
+    DEFAULT_OUT_ROOT,
     DEFAULT_TITLES,
     DEFAULT_UCAN,
+    infer_year_from_db,
 )
 from map_ipeds_vars import main as map_main
 from extract_ipeds_data import main as extract_main
@@ -62,76 +64,122 @@ def build_panel(out_dir: Path, start: int, end: int) -> Path | None:
     return panel_path
 
 
+def discover_years(db_root: Path) -> List[int]:
+    years: Set[int] = set()
+    for path in db_root.rglob("IPEDS*.accdb"):
+        try:
+            y = infer_year_from_db(path)
+        except Exception:
+            continue
+        years.add(y)
+    ys = sorted(y for y in years if 1900 <= y <= 2100)
+    return ys
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--years", type=str, default="2004-2023", help="Year range or comma list")
-    parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory")
+    parser.add_argument("--db-root", type=Path, default=DEFAULT_DB_ROOT, help="Root with IPEDS *.accdb files")
+    parser.add_argument("--out-root", type=Path, default=DEFAULT_OUT_ROOT, help="Output directory root")
     parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES, help="Titles file path")
+    parser.add_argument("--years", type=str, default=None, help="Optional year range or comma list to restrict")
     parser.add_argument("--ucanaccess-lib", type=str, default=str(DEFAULT_UCAN), help="UCanAccess JARs dir")
+    parser.add_argument("--mode", type=str, choices=["jdbc", "csvmeta"], default="jdbc", help="Mapping mode")
+    parser.add_argument("--csv-vartable-root", type=Path, default=None, help="CSV root for VARTABLE##.csv (csvmeta mode)")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s: %(message)s",
-    )
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, format="%(levelname)s: %(message)s")
 
-    out_dir = args.out_dir.expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    db_dir = args.db_dir.expanduser().resolve()
+    out_root = args.out_root.expanduser().resolve()
+    out_root.mkdir(parents=True, exist_ok=True)
+    db_root = args.db_root.expanduser().resolve()
     titles = args.titles.expanduser().resolve()
-    years = parse_years(args.years)
+
+    # Discover available years from DB filenames
+    discovered = discover_years(db_root)
+    if args.years:
+        requested = parse_years(args.years)
+        years = [y for y in discovered if y in set(requested)]
+    else:
+        years = discovered
     if not years:
-        logging.error("No valid years parsed from %s", args.years)
+        logging.error("No years discovered under %s (or restricted by --years).", db_root)
         return 1
     start, end = years[0], years[-1]
 
     logging.info("Resolved paths:")
-    logging.info("  db-dir: %s", db_dir)
-    logging.info("  out-dir: %s", out_dir)
+    logging.info("  db-root: %s", db_root)
+    logging.info("  out-root: %s", out_root)
     logging.info("  titles: %s", titles)
-    logging.info("  ucanaccess-lib: %s", args.ucanaccess_lib)
+    if args.mode == "jdbc":
+        logging.info("  ucanaccess-lib: %s", args.ucanaccess_lib)
+    else:
+        logging.info("  csv-vartable-root: %s", args.csv_vartable_root)
+    logging.info("Years: %s", ", ".join(map(str, years)))
 
-    # Run mapper once (JDBC path by default here)
-    map_rc = map_main(
-        [
-            "--db-dir",
-            str(db_dir),
-            "--out-dir",
-            str(out_dir),
-            "--titles",
-            str(titles),
-            "--years",
-            f"{start}-{end}",
-            "--ucanaccess-lib",
-            str(args.ucanaccess_lib),
-        ]
-    )
+    # Step A: Build mapping
+    if args.mode == "jdbc":
+        map_rc = map_main(
+            [
+                "--db-dir",
+                str(db_root),
+                "--out-dir",
+                str(out_root),
+                "--titles",
+                str(titles),
+                "--years",
+                f"{start}-{end}",
+                "--ucanaccess-lib",
+                str(args.ucanaccess_lib),
+            ]
+        )
+    else:
+        if not args.csv_vartable_root:
+            logging.error("csvmeta mode requires --csv-vartable-root")
+            return 1
+        map_rc = map_main(
+            [
+                "--db-dir",
+                str(db_root),
+                "--out-dir",
+                str(out_root),
+                "--titles",
+                str(titles),
+                "--years",
+                f"{start}-{end}",
+                "--csv-vartable-root",
+                str(args.csv_vartable_root),
+            ]
+        )
     if map_rc != 0:
         logging.error("Mapper failed with exit code %s", map_rc)
         return map_rc
 
-    # Extract per-year tables
-    ext_rc = extract_main(
-        [
-            "--db-dir",
-            str(db_dir),
-            "--out-dir",
-            str(out_dir),
-            "--map-csv",
-            str(out_dir / f"ipeds_var_map_{start}_{end}.csv"),
-            "--years",
-            f"{start}-{end}",
-        ]
-    )
-    if ext_rc != 0:
-        logging.error("Extractor failed with exit code %s", ext_rc)
-        return ext_rc
+    # Step B: Extract per-year tables (JDBC only)
+    if args.mode == "jdbc":
+        ext_rc = extract_main(
+            [
+                "--db-dir",
+                str(db_root),
+                "--out-dir",
+                str(out_root),
+                "--map-csv",
+                str(out_root / f"ipeds_var_map_{start}_{end}.csv"),
+                "--years",
+                ",".join(map(str, years)),
+                "--ucanaccess-lib",
+                str(args.ucanaccess_lib),
+            ]
+        )
+        if ext_rc != 0:
+            logging.error("Extractor failed with exit code %s", ext_rc)
+            return ext_rc
+    else:
+        logging.info("csvmeta mode: mapping created from CSV metadata; extraction requires JDBC or a CSV data fallback.")
 
-    # Build simple panel
-    panel_path = build_panel(out_dir, start, end)
+    # Step C: Build simple panel if exports exist
+    panel_path = build_panel(out_root, start, end)
     if panel_path:
         logging.info("Panel written: %s", panel_path)
     else:
@@ -142,4 +190,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
