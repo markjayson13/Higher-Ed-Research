@@ -12,7 +12,6 @@ import pandas as pd
 from map_ipeds_vars import (
     DEFAULT_DB_DIR,
     DEFAULT_OUT_DIR,
-    DEFAULT_UCAN,
     collect_jars,
     connect_to_database,
     determine_ucanaccess_lib,
@@ -93,8 +92,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument(
         "--ucanaccess-lib",
-        type=Path,
-        default=DEFAULT_UCAN,
+        type=str,
+        default=None,
         help="Directory containing UCanAccess JAR files (overrides UCANACCESS_LIB)",
     )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
@@ -107,9 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     year = args.year
-    map_path = args.map_csv.expanduser().resolve()
-    mapping = load_mapping(map_path, year)
-    logging.info("Loaded mapping from %s", map_path)
+    mapping = load_mapping(args.map_csv.expanduser().resolve(), year)
 
     if args.tables.lower() != "all":
         requested_tables = {table.strip() for table in args.tables.split(",") if table.strip()}
@@ -124,12 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     script_dir = Path(__file__).resolve().parent
     lib_dir = determine_ucanaccess_lib(args.ucanaccess_lib, script_dir)
-    try:
-        classpath = collect_jars(lib_dir)
-    except FileNotFoundError as exc:
-        logging.error(exc)
-        return 1
-    logging.info("Using UCanAccess library directory: %s", lib_dir)
+    classpath = collect_jars(lib_dir)
 
     db_dir = args.db_dir.expanduser().resolve()
     db_path = (db_dir / f"IPEDS{year}.accdb")
@@ -143,8 +135,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     db_path = db_path.resolve()
 
     out_dir = args.out_dir.expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    logging.info("Writing table extracts to: %s", out_dir)
 
     with connect_to_database(db_path, classpath) as connection:
         for table_name, columns in sorted(mapping.items()):

@@ -9,7 +9,7 @@ CSVs for further analysis without copying any database files into the repository
 
 1. Install Java (UCanAccess requires a JVM):
    ```bash
-   brew install openjdk
+   brew install openjdk@11
    ```
    If you install a different version, ensure the `JAVA_HOME` environment variable
    points to the correct JDK.
@@ -29,8 +29,6 @@ CSVs for further analysis without copying any database files into the repository
    source .venv/bin/activate
    pip install -r ipeds/requirements.txt
    ```
-   [`JayDeBeApi`](https://pypi.org/project/JayDeBeApi/) is the Python ↔ JDBC bridge that
-   loads the UCanAccess driver; Java must be installed separately via Homebrew.
 
 ### Optional configuration
 
@@ -42,28 +40,14 @@ requirements, but you can override them through CLI flags.
 ## Mapping IPEDS variable titles
 
 `map_ipeds_vars.py` reads a list of human-readable titles (one per line) and
- searches every requested IPEDS Access database for matching entries in the
-appropriate `VARTABLE##`. By default it covers 2004–2023 and looks for
-`titles_2023.txt` in the repository root. If the file lives elsewhere, pass
-its path with `--titles`.
+searches every requested IPEDS Access database for matching entries in the
+appropriate `VARTABLE##`. By default it covers 2004–2023 and expects titles in
+`../titles_2023.txt`.
 
 ```bash
 python ipeds/map_ipeds_vars.py \
-  --db-dir "/...YOUR_REAL_DB_FOLDER..." \
-  --out-dir "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels" \
-  --titles "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt" \
-  --years 2004-2023 \
-  --ucanaccess-lib "/Users/markjaysonfarol13/lib/ucanaccess"
-```
-
-If you export the `VARTABLE##` tables to CSV with [MDB ACCDB Viewer](https://eggerapps.at/mdbviewer/) (you can select multiple tables per year), you can skip Java entirely:
-
-```bash
-python ipeds/map_ipeds_vars.py \
-  --csv-vartable-root "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/exports" \
-  --out-dir "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels" \
-  --titles "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt" \
-  --years 2004-2023
+  --db-dir "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS COMPLETE DATABASE/IPEDS DATABASE" \
+  --out-dir "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS"
 ```
 
 Key options:
@@ -94,10 +78,8 @@ clean `year` plus `UNITID` identifier for panel analyses.
 ```bash
 python ipeds/extract_ipeds_data.py \
   --year 2023 \
-  --db-dir "/...YOUR_REAL_DB_FOLDER..." \
-  --map-csv "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels/ipeds_var_map_2004_2023.csv" \
-  --out-dir "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels" \
-  --ucanaccess-lib "/Users/markjaysonfarol13/lib/ucanaccess"
+  --map-csv "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS/ipeds_var_map_2004_2023.csv" \
+  --out-dir "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS"
 ```
 
 Use `--tables` to provide a comma-separated list of table names or leave it as
@@ -106,58 +88,15 @@ silently dropped so that exports always reflect the database schema.
 
 ## Data locations
 
-The scripts operate directly on the Access databases located at the folder that actually contains `IPEDS20YY.accdb`/`.mdb` (fill in the real path for `--db-dir`).
-
+The scripts operate directly on the Access databases located at:
+```
+/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS COMPLETE DATABASE/IPEDS DATABASE
+```
 Exports are written to:
 ```
-/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels
+/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS
 ```
-Quote any CLI paths that include spaces (`"/Users/.../Higher-Ed-Research/..."`) so the shell does not split them apart.
 These paths are customizable via CLI options when needed.
-
-## Troubleshooting
-
-**Titles file not found**
-
-- Confirm the file exists and contains one checked IPEDS title per line:
-  ```bash
-  sed -n '1,10p' "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt"
-  ```
-- If the repository is cloned somewhere other than `~/Higher Ed research/`,
-  provide the explicit location using `--titles "/full/path/titles_2023.txt"`.
-  The mapper now prints the resolved titles path before running so you can
-  verify the script is using the file you expect.
-
-**UCanAccess library directory not found**
-
-- Ensure the extracted JARs (ucanaccess, jackcess, hsqldb, commons-logging,
-  commons-lang) are inside the folder passed to `--ucanaccess-lib` or listed in
-  `UCANACCESS_LIB`.
-- The default location is `~/lib/ucanaccess`; create it if necessary and copy
-  all JARs there:
-  ```bash
-  mkdir -p "$HOME/lib/ucanaccess"
-  cp /path/to/ucanaccess/*.jar "$HOME/lib/ucanaccess/"
-  ```
-
-**Which directory should I pass to --db-dir?**
-
-- Find the folder that actually contains the yearly Access databases:
-  ```bash
-  find "$HOME" -type f \( -name "IPEDS20*.accdb" -o -name "IPEDS20*.mdb" \) 2>/dev/null
-  ```
-- Use the parent directory of those files as the `--db-dir` argument. The
-  script logs the directory it will search so you can confirm it matches your
-  environment.
-
-**Output directory preparation**
-
-  - The CLI defaults to `/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels`.
-  - The tools automatically create the directory, but you can also create it
-    manually to double-check permissions:
-    ```bash
-    mkdir -p "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels"
-    ```
 
 ## Safety notes
 
