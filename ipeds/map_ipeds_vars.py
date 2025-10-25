@@ -21,9 +21,9 @@ DEFAULT_DB_DIR = Path(
     "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/"
     "IPEDS COMPLETE DATABASE/IPEDS DATABASE"
 )
+
 DEFAULT_OUT_DIR = Path(
-    "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/"
-    "IPEDS EXPORTS"
+    "/Users/markjaysonfarol13/Higher Ed research/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels"
 )
 DEFAULT_TITLES_PATH = Path(__file__).resolve().parent.parent / "titles_2023.txt"
 DEFAULT_UCANACCESS_LIB = Path.home() / "lib/ucanaccess"
