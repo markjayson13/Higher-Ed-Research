@@ -9,26 +9,49 @@ import argparse
 import csv
 import logging
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 import jaydebeapi
 from rapidfuzz import fuzz, process
 
-DEFAULT_DB_DIR = Path(
-    "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/"
-    "IPEDS COMPLETE DATABASE/IPEDS DATABASE"
+DEFAULT_WORKSPACE = Path(
+    "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace"
 )
-DEFAULT_OUT_DIR = Path(
-    "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/"
-    "IPEDS EXPORTS"
+DEFAULT_DB_ROOT = DEFAULT_WORKSPACE / "IPEDS COMPLETE DATABASE"
+DEFAULT_OUT_ROOT = DEFAULT_WORKSPACE / "PANELS"
+DEFAULT_TITLES = Path(
+    "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt"
 )
-DEFAULT_TITLES_PATH = Path(__file__).resolve().parent.parent / "titles_2023.txt"
-DEFAULT_UCANACCESS_LIB = Path.home() / "lib/ucanaccess"
+DEFAULT_UCAN = Path("/Users/markjaysonfarol13/lib/ucanaccess")
+DEFAULT_OUT_ROOT.mkdir(parents=True, exist_ok=True)
+
 DEFAULT_YEARS = tuple(range(2004, 2024))
 FUZZY_THRESHOLD = 90
+EXPECTED_JARS = [
+    "ucanaccess-5.0.1.jar",
+    "jackcess-3.0.1.jar",
+    "hsqldb.jar",
+    "commons-logging-1.2.jar",
+    "commons-lang3-3.12.0.jar",
+]
+YEAR_RX = re.compile(r"IPEDS(\d{6})\.accdb$", re.I)
+
+
+class TitlesFileEmptyError(RuntimeError):
+    """Raised when the titles file does not contain any usable entries."""
+
+
+def infer_year_from_db(db_path: Path) -> int:
+    """Map IPEDSYYYYYY.accdb to the starting year component."""
+    match = YEAR_RX.search(db_path.name)
+    if not match:
+        raise ValueError(f"Cannot infer year from filename: {db_path.name}")
+    yyyymm = match.group(1)
+    return int(yyyymm[:4])
 
 
 @dataclass
@@ -73,7 +96,7 @@ def read_titles(path: Path) -> List[str]:
                 continue
             titles.append(cleaned)
     if not titles:
-        logging.warning("No titles found in %s", path)
+        raise TitlesFileEmptyError(f"No variable titles were found in {path}")
     return titles
 
 
@@ -106,32 +129,49 @@ def determine_ucanaccess_lib(cli_value: str | None, script_dir: Path) -> Path:
     if lib_override:
         return Path(lib_override).expanduser().resolve()
 
-    return DEFAULT_UCANACCESS_LIB.expanduser().resolve()
+    return DEFAULT_UCAN.expanduser().resolve()
 
 
 def collect_jars(lib_dir: Path) -> List[str]:
     if not lib_dir.exists():
         raise FileNotFoundError(
-            "UCanAccess library directory not found: " f"{lib_dir}. "
-            "Download the UCanAccess distribution and place all JARs in this folder."
+            "UCanAccess library directory not found: "
+            f"{lib_dir}. Download 'UCanAccess-5.0.1-bin.zip' and place its JARs here."
         )
     jars = sorted(str(path) for path in lib_dir.glob("*.jar"))
     if not jars:
+        expected = ", ".join(EXPECTED_JARS)
         raise FileNotFoundError(
-            f"No JAR files were found in {lib_dir}. Ensure the UCanAccess JARs are available."
+            "No JAR files were found in "
+            f"{lib_dir}. Download 'UCanAccess-5.0.1-bin.zip' and ensure these files "
+            f"are present: {expected}."
         )
     return jars
 
 
-def get_database_path(db_dir: Path, year: int) -> Path | None:
+_DATABASE_CACHE: Dict[Tuple[Path, int], Path | None] = {}
+
+
+def find_database_path(db_root: Path, year: int) -> Path | None:
     """Return the Access database path for the given year, if it exists."""
-    candidates = [
-        db_dir / f"IPEDS{year}.accdb",
-        db_dir / f"IPEDS{year}.mdb",
-    ]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate.resolve()
+    resolved_root = db_root.expanduser().resolve()
+    cache_key = (resolved_root, year)
+    if cache_key in _DATABASE_CACHE:
+        cached = _DATABASE_CACHE[cache_key]
+        return cached
+
+    for pattern in ("IPEDS*.accdb", "IPEDS*.mdb"):
+        for candidate in resolved_root.rglob(pattern):
+            try:
+                inferred = infer_year_from_db(candidate)
+            except ValueError:
+                continue
+            if inferred == year:
+                resolved = candidate.resolve()
+                _DATABASE_CACHE[cache_key] = resolved
+                return resolved
+
+    _DATABASE_CACHE[cache_key] = None
     return None
 
 
@@ -151,31 +191,15 @@ def fetch_vartable_records(cursor, table_name: str) -> List[Tuple[str, str, str]
     return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
 
 
-def map_titles_for_year(
+def match_titles(
     year: int,
     titles: Sequence[str],
-    db_dir: Path,
-    classpath: Sequence[str],
+    records: Iterable[VarRecord],
     use_fuzzy: bool,
 ) -> Tuple[List[VarRecord], List[Tuple[int, str]]]:
-    db_path = get_database_path(db_dir, year)
-    if not db_path:
-        logging.warning("Database for %s not found in %s", year, db_dir)
-        return [], [(year, title) for title in titles]
-
-    vartable_name = f"VARTABLE{year % 100:02d}"
-    try:
-        with connect_to_database(db_path, classpath) as connection:
-            cursor = connection.cursor()
-            records = fetch_vartable_records(cursor, vartable_name)
-    except jaydebeapi.DatabaseError as exc:
-        logging.error("Failed to query %s in %s: %s", vartable_name, db_path, exc)
-        return [], [(year, title) for title in titles]
-
     by_title: Dict[str, List[VarRecord]] = defaultdict(list)
-    for table_name, var_name, var_title in records:
-        record = VarRecord(year=year, table_name=table_name, var_name=var_name, var_title=var_title)
-        by_title[var_title].append(record)
+    for record in records:
+        by_title[record.var_title].append(record)
 
     found_records: List[VarRecord] = []
     missing: List[Tuple[int, str]] = []
@@ -214,6 +238,35 @@ def map_titles_for_year(
         unique[(record.table_name, record.var_name)] = record
 
     return list(unique.values()), missing
+
+
+def map_titles_for_year(
+    year: int,
+    titles: Sequence[str],
+    db_root: Path,
+    classpath: Sequence[str],
+    use_fuzzy: bool,
+) -> Tuple[List[VarRecord], List[Tuple[int, str]]]:
+    db_path = find_database_path(db_root, year)
+    if not db_path:
+        logging.warning("Database for %s not found in %s", year, db_root)
+        return [], [(year, title) for title in titles]
+
+    vartable_name = f"VARTABLE{year % 100:02d}"
+    try:
+        with connect_to_database(db_path, classpath) as connection:
+            cursor = connection.cursor()
+            rows = fetch_vartable_records(cursor, vartable_name)
+    except jaydebeapi.DatabaseError as exc:
+        logging.error("Failed to query %s in %s: %s", vartable_name, db_path, exc)
+        return [], [(year, title) for title in titles]
+
+    records = [
+        VarRecord(year=year, table_name=table_name, var_name=var_name, var_title=var_title)
+        for table_name, var_name, var_title in rows
+    ]
+
+    return match_titles(year, titles, records, use_fuzzy)
 
 
 def write_mapping_csv(records: Sequence[VarRecord], output_path: Path) -> None:
@@ -269,10 +322,10 @@ def perform_self_test(records: Sequence[VarRecord], titles: Sequence[str]) -> No
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
-    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory to store outputs")
+    parser.add_argument("--db-root", type=Path, default=DEFAULT_DB_ROOT, help="Directory with IPEDS databases")
+    parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_ROOT, help="Directory to store outputs")
     parser.add_argument("--years", type=str, default=None, help="Comma-separated years or ranges (e.g., 2004-2006,2010)")
-    parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES_PATH, help="Path to file listing variable titles")
+    parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES, help="Path to file listing variable titles")
     parser.add_argument("--fuzzy", action="store_true", help="Enable fuzzy title matching with RapidFuzz")
     parser.add_argument(
         "--ucanaccess-lib",
@@ -290,7 +343,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         logging.error("No valid years were provided.")
         return 1
     titles_path = args.titles.expanduser().resolve()
-    titles = read_titles(titles_path)
+    try:
+        titles = read_titles(titles_path)
+    except TitlesFileEmptyError as exc:
+        logging.error("%s", exc)
+        return 1
 
     script_dir = Path(__file__).resolve().parent
     lib_dir = determine_ucanaccess_lib(args.ucanaccess_lib, script_dir)
@@ -299,14 +356,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     out_dir = args.out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    db_dir = args.db_dir.expanduser().resolve()
+    db_root = args.db_root.expanduser().resolve()
 
     all_records: List[VarRecord] = []
     all_missing: List[Tuple[int, str]] = []
 
     for year in years:
         logging.info("Processing %s", year)
-        records, missing = map_titles_for_year(year, titles, db_dir, classpath, args.fuzzy)
+        records, missing = map_titles_for_year(year, titles, db_root, classpath, args.fuzzy)
         logging.info("%s: requested=%s, found=%s, missing=%s", year, len(titles), len(records), len(missing))
         all_records.extend(records)
         all_missing.extend(missing)
