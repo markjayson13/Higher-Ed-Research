@@ -1,0 +1,4 @@
+# Java (OpenJDK 11+) must be installed separately for UCanAccess.
+jaydebeapi>=1.2.3
+pandas>=2.0.0
+rapidfuzz>=3.0.0
