@@ -40,9 +40,10 @@ requirements, but you can override them through CLI flags.
 ## Mapping IPEDS variable titles
 
 `map_ipeds_vars.py` reads a list of human-readable titles (one per line) and
-searches every requested IPEDS Access database for matching entries in the
-appropriate `VARTABLE##`. By default it covers 2004–2023 and expects titles in
-`../titles_2023.txt`.
+ searches every requested IPEDS Access database for matching entries in the
+appropriate `VARTABLE##`. By default it covers 2004–2023 and looks for
+`titles_2023.txt` in the repository root. If the file lives elsewhere, pass
+its path with `--titles`.
 
 ```bash
 python ipeds/map_ipeds_vars.py \
@@ -97,6 +98,50 @@ Exports are written to:
 /Users/markjaysonfarol13/Higher Ed research/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels
 ```
 These paths are customizable via CLI options when needed.
+
+## Troubleshooting
+
+**Titles file not found**
+
+- Confirm the file exists and contains one checked IPEDS title per line:
+  ```bash
+  sed -n '1,10p' "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt"
+  ```
+- If the repository is cloned somewhere other than `~/Higher Ed research/`,
+  provide the explicit location using `--titles "/full/path/titles_2023.txt"`.
+  The mapper now prints the resolved titles path before running so you can
+  verify the script is using the file you expect.
+
+**UCanAccess library directory not found**
+
+- Ensure the extracted JARs (ucanaccess, jackcess, hsqldb, commons-logging,
+  commons-lang) are inside the folder passed to `--ucanaccess-lib` or listed in
+  `UCANACCESS_LIB`.
+- The default location is `~/lib/ucanaccess`; create it if necessary and copy
+  all JARs there:
+  ```bash
+  mkdir -p "$HOME/lib/ucanaccess"
+  cp /path/to/ucanaccess/*.jar "$HOME/lib/ucanaccess/"
+  ```
+
+**Which directory should I pass to --db-dir?**
+
+- Find the folder that actually contains the yearly Access databases:
+  ```bash
+  find "$HOME" -type f \( -name "IPEDS20*.accdb" -o -name "IPEDS20*.mdb" \) 2>/dev/null
+  ```
+- Use the parent directory of those files as the `--db-dir` argument. The
+  script logs the directory it will search so you can confirm it matches your
+  environment.
+
+**Output directory preparation**
+
+- The CLI defaults to `/Users/markjaysonfarol13/Higher Ed research/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels`.
+- The tools automatically create the directory, but you can also create it
+  manually to double-check permissions:
+  ```bash
+  mkdir -p "/Users/markjaysonfarol13/Higher Ed research/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels"
+  ```
 
 ## Safety notes
 

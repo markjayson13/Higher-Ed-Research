@@ -61,6 +61,43 @@ def parse_years(years: str | None) -> List[int]:
     return filtered
 
 
+def resolve_titles_path(raw_value: Path | None) -> Path:
+    """Resolve the titles file path, trying common fallbacks when missing."""
+
+    candidates: List[Path] = []
+
+    if raw_value is not None:
+        candidates.append(raw_value.expanduser())
+    else:
+        candidates.append(DEFAULT_TITLES_PATH)
+        repo_root = Path(__file__).resolve().parent.parent
+        candidates.append(repo_root / "titles_2023.txt")
+        documents_repo = Path.home() / "Documents/GitHub/Higher-Ed-Research/titles_2023.txt"
+        candidates.append(documents_repo)
+        candidates.append(Path.cwd() / "titles_2023.txt")
+
+    seen: set[Path] = set()
+    for candidate in candidates:
+        expanded = candidate.expanduser()
+        if expanded in seen:
+            continue
+        seen.add(expanded)
+        resolved = expanded.resolve()
+        if resolved.exists():
+            return resolved
+
+    search_list = [path.expanduser().resolve() for path in candidates]
+    message = [
+        "Titles file not found.",
+        "Checked the following locations:",
+    ]
+    message.extend(f"  - {path}" for path in search_list)
+    message.append(
+        "Provide the correct path with --titles or copy titles_2023.txt into the repository root."
+    )
+    raise FileNotFoundError("\n".join(message))
+
+
 def read_titles(path: Path) -> List[str]:
     """Return cleaned titles from the provided file."""
     if not path.exists():
@@ -272,7 +309,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT, help="Directory to store outputs")
     parser.add_argument("--years", type=str, default=None, help="Comma-separated years or ranges (e.g., 2004-2006,2010)")
-    parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES_PATH, help="Path to file listing variable titles")
+    parser.add_argument(
+        "--titles",
+        type=Path,
+        default=None,
+        help=f"Path to file listing variable titles (default: {DEFAULT_TITLES_PATH})",
+    )
     parser.add_argument("--fuzzy", action="store_true", help="Enable fuzzy title matching with RapidFuzz")
     parser.add_argument(
         "--ucanaccess-lib",
@@ -289,17 +331,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not years:
         logging.error("No valid years were provided.")
         return 1
-    titles_path = args.titles.expanduser().resolve()
+    titles_path = resolve_titles_path(args.titles)
+    logging.info("Using titles file: %s", titles_path)
     titles = read_titles(titles_path)
 
     script_dir = Path(__file__).resolve().parent
     lib_dir = determine_ucanaccess_lib(args.ucanaccess_lib, script_dir)
     classpath = collect_jars(lib_dir)
+    logging.info("Using UCanAccess library directory: %s", lib_dir)
 
     out_dir = args.out_dir.expanduser().resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
+    logging.info("Writing outputs to: %s", out_dir)
 
     db_dir = args.db_dir.expanduser().resolve()
+    logging.info("Searching databases in: %s", db_dir)
 
     all_records: List[VarRecord] = []
     all_missing: List[Tuple[int, str]] = []
