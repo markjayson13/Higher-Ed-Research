@@ -1,0 +1,9 @@
+# IPEDS local data and exports
+*.mdb
+*.accdb
+/ipeds/*.log
+/ipeds/.env
+/ipeds/__pycache__/
+/ipeds/.ipynb_checkpoints/
+# Optional: keep exports out of git; comment out if you want to version them
+#/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS/*
