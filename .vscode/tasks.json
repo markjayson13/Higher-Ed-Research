@@ -1,0 +1,47 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Panelize (JDBC)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd '${workspaceFolder}' && source .venv/bin/activate && \
+         python3 ipeds/map_ipeds_vars.py \
+           --db-dir \"/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1\" \
+           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\" \
+           --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
+           --years 2004-2023 \
+           --ucanaccess-lib \"/Users/markjaysonfarol13/lib/ucanaccess\" && \
+         python3 ipeds/panelize.py \
+           --years 2004-2023 \
+           --db-dir \"/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1\" \
+           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\" \
+           --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
+           --ucanaccess-lib \"/Users/markjaysonfarol13/lib/ucanaccess\""
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Panelize (CSV fallback)",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "cd '${workspaceFolder}' && source .venv/bin/activate && \
+         python3 ipeds/map_ipeds_vars.py \
+           --csv-vartable-root \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/exports\" \
+           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\" \
+           --titles  \"/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt\" \
+           --years 2004-2023 && \
+         python3 ipeds/panelize.py \
+           --years 2004-2023 \
+           --db-dir \"/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1\" \
+           --out-dir \"/Users/markjaysonfarol13/Higher Ed research/Output\""
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
+

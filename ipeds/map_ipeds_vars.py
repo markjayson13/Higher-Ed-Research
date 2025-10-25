@@ -17,16 +17,11 @@ from typing import Dict, List, Sequence, Tuple
 import jaydebeapi
 from rapidfuzz import fuzz, process
 
-DEFAULT_DB_DIR = Path(
-    "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/"
-    "IPEDS COMPLETE DATABASE/IPEDS DATABASE"
-)
-DEFAULT_OUT_DIR = Path(
-    "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/"
-    "IPEDS EXPORTS"
-)
-DEFAULT_TITLES_PATH = Path(__file__).resolve().parent.parent / "titles_2023.txt"
-DEFAULT_UCANACCESS_LIB = Path.home() / "lib/ucanaccess"
+# Defaults aligned to the user's real environment
+DEFAULT_DB_DIR = Path("/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1")
+DEFAULT_OUT_DIR = Path("/Users/markjaysonfarol13/Higher Ed research/Output")
+DEFAULT_TITLES = Path("/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt")
+DEFAULT_UCAN = Path("/Users/markjaysonfarol13/lib/ucanaccess")
 DEFAULT_YEARS = tuple(range(2004, 2024))
 FUZZY_THRESHOLD = 90
 
@@ -106,19 +101,24 @@ def determine_ucanaccess_lib(cli_value: str | None, script_dir: Path) -> Path:
     if lib_override:
         return Path(lib_override).expanduser().resolve()
 
-    return DEFAULT_UCANACCESS_LIB.expanduser().resolve()
+    # Fall back to project/user default
+    return DEFAULT_UCAN.expanduser().resolve()
 
 
 def collect_jars(lib_dir: Path) -> List[str]:
     if not lib_dir.exists():
         raise FileNotFoundError(
-            "UCanAccess library directory not found: " f"{lib_dir}. "
-            "Download the UCanAccess distribution and place all JARs in this folder."
+            "UCanAccess library directory not found: "
+            f"{lib_dir}. Expected JARs from UCanAccess (e.g., UCanAccess-5.0.1-bin.zip).\n"
+            "Download and extract, then place these in the folder: ucanaccess-*.jar, "
+            "jackcess-*.jar, hsqldb-*.jar, commons-logging-*.jar, commons-lang-*.jar."
         )
     jars = sorted(str(path) for path in lib_dir.glob("*.jar"))
     if not jars:
         raise FileNotFoundError(
-            f"No JAR files were found in {lib_dir}. Ensure the UCanAccess JARs are available."
+            f"No JAR files were found in {lib_dir}. Ensure the UCanAccess JARs are available.\n"
+            "Look for files like: ucanaccess-<ver>.jar, jackcess-<ver>.jar, hsqldb-<ver>.jar, "
+            "commons-logging-<ver>.jar, commons-lang-<ver>.jar from UCanAccess-5.0.1-bin.zip."
         )
     return jars
 
@@ -272,7 +272,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Directory to store outputs")
     parser.add_argument("--years", type=str, default=None, help="Comma-separated years or ranges (e.g., 2004-2006,2010)")
-    parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES_PATH, help="Path to file listing variable titles")
+    parser.add_argument("--titles", type=Path, default=DEFAULT_TITLES, help="Path to file listing variable titles")
     parser.add_argument("--fuzzy", action="store_true", help="Enable fuzzy title matching with RapidFuzz")
     parser.add_argument(
         "--ucanaccess-lib",
@@ -280,26 +280,123 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Directory containing UCanAccess JAR files (overrides UCANACCESS_LIB)",
     )
+    parser.add_argument(
+        "--csv-vartable-root",
+        type=Path,
+        default=None,
+        help=(
+            "Root folder with per-year subfolders containing VARTABLE##.csv "
+            "(CSV fallback; no JDBC needed)"
+        ),
+    )
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
 
     args = parser.parse_args(argv)
     configure_logging(args.verbose)
 
+    # Resolve common paths and echo configuration
+    titles_path = args.titles.expanduser().resolve()
+    out_dir = args.out_dir.expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # CSV fallback mode (no Java/JDBC needed)
+    if args.csv_vartable_root:
+        csv_root = args.csv_vartable_root.expanduser().resolve()
+        db_dir = args.db_dir.expanduser().resolve()
+        logging.info("Resolved paths:")
+        logging.info("  db-dir: %s", db_dir)
+        logging.info("  titles: %s", titles_path)
+        logging.info("  out-dir: %s", out_dir)
+        logging.info("  csv-vartable-root: %s", csv_root)
+
+        titles = read_titles(titles_path)
+        if not titles:
+            raise SystemExit(f"No titles found in {titles_path}")
+
+        import pandas as pd  # local import to make mode explicit
+
+        rows = []
+        years = parse_years(args.years)
+        if not years:
+            logging.error("No valid years were provided.")
+            return 1
+        processed_years = []
+        total_hits = 0
+        for year in years:
+            yy = f"{year}"[-2:]
+            csv_path = csv_root / str(year) / f"VARTABLE{yy}.csv"
+            if not csv_path.exists():
+                print(f"[WARN] Missing {csv_path} — skipping {year}")
+                continue
+            try:
+                df = pd.read_csv(csv_path, dtype=str).fillna("")
+            except Exception as exc:
+                raise SystemExit(f"Failed to read {csv_path}: {exc}")
+            required = {"tableName", "varName", "varTitle"}
+            if not required.issubset(df.columns):
+                missing_cols = required - set(df.columns)
+                raise SystemExit(f"{csv_path} is missing columns: {missing_cols}")
+
+            hit = df[df["varTitle"].isin(titles)].copy()
+            if hit.empty:
+                print(f"[INFO] No matches in {csv_path.name}")
+                processed_years.append(year)
+                continue
+            hit.insert(0, "year", year)
+            sub = hit[["year", "tableName", "varName", "varTitle"]]
+            rows.append(sub)
+            total_hits += len(sub)
+            processed_years.append(year)
+
+        if not rows:
+            raise SystemExit(
+                "No mappings found in CSV fallback. Check titles and exported VARTABLE##.csv files."
+            )
+
+        out = pd.concat(rows, ignore_index=True).drop_duplicates().sort_values([
+            "year", "tableName", "varName"
+        ])
+
+        map_csv = out_dir / "ipeds_var_map_2004_2023.csv"
+        out.to_csv(map_csv, index=False)
+
+        # Optional SQL template mirroring JDBC mode naming
+        sql_out = out_dir / "ipeds_extract_sql_2004_2023.sql"
+        with sql_out.open("w", encoding="utf-8") as f:
+            for (year, table), g in out.groupby(["year", "tableName"]):
+                cols = ",\n  ".join(sorted(set(g["varName"])) )
+                f.write(
+                    f"-- year {year}, table {table}\nSELECT\n  {year} AS year,\n  UNITID,\n  {cols}\nFROM {table};\n\n"
+                )
+
+        # Summary and exit
+        print("[OK] Wrote mapping:", map_csv)
+        print(
+            f"[SUMMARY] years processed={len(processed_years)}, titles requested={len(titles)}, "
+            f"rows written={len(out)}, distinct mappings={out.drop(columns=['varTitle']).drop_duplicates().shape[0]}"
+        )
+        return 0
+
+    # JDBC / UCanAccess mode
     years = parse_years(args.years)
     if not years:
         logging.error("No valid years were provided.")
         return 1
-    titles_path = args.titles.expanduser().resolve()
     titles = read_titles(titles_path)
+    if not titles:
+        raise SystemExit(f"No titles found in {titles_path}")
 
     script_dir = Path(__file__).resolve().parent
     lib_dir = determine_ucanaccess_lib(args.ucanaccess_lib, script_dir)
     classpath = collect_jars(lib_dir)
 
-    out_dir = args.out_dir.expanduser().resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
     db_dir = args.db_dir.expanduser().resolve()
+
+    logging.info("Resolved paths:")
+    logging.info("  titles: %s", titles_path)
+    logging.info("  out-dir: %s", out_dir)
+    logging.info("  db-dir: %s", db_dir)
+    logging.info("  ucanaccess-lib: %s", lib_dir)
 
     all_records: List[VarRecord] = []
     all_missing: List[Tuple[int, str]] = []
@@ -318,6 +415,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_mapping_csv(all_records, mapping_path)
     write_sql_template(all_records, sql_path)
     write_missing_csv(all_missing, missing_path)
+
+    # Summary
+    total_found = len(all_records)
+    total_missing = len(all_missing)
+    logging.info(
+        "Summary: years=%s, titles requested per year=%s, total found=%s, total missing=%s",
+        len(years), len(titles), total_found, total_missing,
+    )
+    return 0
 
     perform_self_test(all_records, titles)
 

@@ -1,106 +1,97 @@
 # IPEDS Mapping & Extraction Tools
 
-These utilities help you translate checked IPEDS variable titles into their exact
-`tableName` and `varName` identifiers using the authoritative `VARTABLE##`
-metadata stored in each yearly Access database. They also support exporting tidy
-CSVs for further analysis without copying any database files into the repository.
+Utilities to map human-readable IPEDS variable titles to database `tableName` and
+`varName`, then export tidy CSVs for analysis. Supports two modes:
 
-## Prerequisites (macOS)
+- JDBC / UCanAccess (Java required)
+- CSV fallback (no Java; uses exported `VARTABLE##.csv`)
 
-1. Install Java (UCanAccess requires a JVM):
-   ```bash
-   brew install openjdk@11
-   ```
-   If you install a different version, ensure the `JAVA_HOME` environment variable
-   points to the correct JDK.
-2. Download the latest [UCanAccess](http://ucanaccess.sourceforge.net/site.html)
-   release and extract all JAR files into `~/lib/ucanaccess` (or another folder of
-   your choice). The directory should include files similar to:
-   - `ucanaccess-<version>.jar`
-   - `jackcess-<version>.jar`
-   - `hsqldb-<version>.jar`
-   - `commons-logging-<version>.jar`
-   - `commons-lang-<version>.jar`
+## Setup
 
-   The tools scan this directory and build the `CLASSPATH` automatically.
-3. Create a virtual environment and install Python dependencies:
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r ipeds/requirements.txt
-   ```
-
-### Optional configuration
-
-You can override the default UCanAccess JAR directory by setting `UCANACCESS_LIB`
-in `ipeds/.env` (copy `ipeds/.env.example`) or via the environment when launching
-the scripts. All other paths default to the locations provided in the project
-requirements, but you can override them through CLI flags.
-
-## Mapping IPEDS variable titles
-
-`map_ipeds_vars.py` reads a list of human-readable titles (one per line) and
-searches every requested IPEDS Access database for matching entries in the
-appropriate `VARTABLE##`. By default it covers 2004–2023 and expects titles in
-`../titles_2023.txt`.
+Create and activate a virtual environment, then install Python deps:
 
 ```bash
-python ipeds/map_ipeds_vars.py \
-  --db-dir "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS COMPLETE DATABASE/IPEDS DATABASE" \
-  --out-dir "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS"
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r ipeds/requirements.txt
 ```
 
-Key options:
+If using JDBC / UCanAccess:
 
-- `--years`: Comma-separated list or ranges (e.g., `2007-2010,2012`).
-- `--titles`: Path to a custom titles file.
-- `--fuzzy`: Enable ≥90 token-set ratio fuzzy matching with RapidFuzz.
-- `--ucanaccess-lib`: Override the UCanAccess JAR directory (same as `UCANACCESS_LIB`).
-- `--verbose`: Print debug logs.
+1) Install a JDK (e.g., OpenJDK 11+):
+```bash
+brew install openjdk
+```
+2) Download UCanAccess (e.g., UCanAccess-5.0.1-bin.zip) and place all JARs into:
+```
+/Users/markjaysonfarol13/lib/ucanaccess
+```
+Expected files include `ucanaccess-*.jar`, `jackcess-*.jar`, `hsqldb-*.jar`,
+`commons-logging-*.jar`, `commons-lang-*.jar`.
 
-Outputs are written to the export directory:
+## Mapping IPEDS Variable Titles
 
-- `ipeds_var_map_<start>_<end>.csv`: Mapping of `varTitle → tableName/varName` per year.
-- `ipeds_extract_sql_<start>_<end>.sql`: SELECT templates with `<year> AS year`,
-  `UNITID`, and all discovered variables.
-- `missing_titles_<start>_<end>.csv`: Titles that were not found in the VARTABLE for each year.
-
-The mapper trusts each year’s `VARTABLE##`, ensuring the proper finance form (F1,
-F2, F3, etc.) is automatically selected according to the institution’s accounting
-standards.
-
-## Extracting tidy tables
-
-`extract_ipeds_data.py` converts the mapping into CSV exports for a specific
-year. It only selects columns confirmed to exist in the target table and keeps a
-clean `year` plus `UNITID` identifier for panel analyses.
+JDBC / UCanAccess (Java required):
 
 ```bash
-python ipeds/extract_ipeds_data.py \
+python3 ipeds/map_ipeds_vars.py \
+  --db-dir "/Users/markjaysonfarol13/Desktop/IPEDS Panel Dataset/IPEDS DATABASE1" \
+  --out-dir "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels" \
+  --titles "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt" \
+  --years 2004-2023 \
+  --ucanaccess-lib "/Users/markjaysonfarol13/lib/ucanaccess"
+```
+
+CSV fallback (no Java; export VARTABLE##.csv with MDB ACCDB Viewer):
+
+```bash
+python3 ipeds/map_ipeds_vars.py \
+  --csv-vartable-root "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/exports" \
+  --out-dir "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels" \
+  --titles "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/titles_2023.txt" \
+  --years 2004-2023
+```
+
+Notes:
+- In the Viewer, set CSV export to International/UTF-8. You can export multiple
+  tables at once. Folder structure: `exports/YYYY/VARTABLE##.csv`.
+- Quote paths containing spaces.
+
+Outputs:
+- `ipeds_var_map_<start>_<end>.csv` and `ipeds_extract_sql_<start>_<end>.sql` (JDBC)
+- `ipeds_var_map_2004_2023.csv` and `ipeds_extract_sql_2004_2023.sql` (CSV fallback)
+
+## Extracting Tidy Tables
+
+Convert the mapping into per-table CSV exports for a specific year:
+
+```bash
+python3 ipeds/extract_ipeds_data.py \
   --year 2023 \
-  --map-csv "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS/ipeds_var_map_2004_2023.csv" \
-  --out-dir "/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS"
+  --map-csv "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels/ipeds_var_map_2004_2023.csv" \
+  --out-dir "/Users/markjaysonfarol13/Documents/GitHub/Higher-Ed-Research/IPEDS/IPEDS Panels/Panels"
 ```
 
-Use `--tables` to provide a comma-separated list of table names or leave it as
-`all` to export every mapped table for the year. Missing columns are logged and
-silently dropped so that exports always reflect the database schema.
+Use `--tables` with a comma-separated list to restrict which mapped tables to export.
+Missing columns are logged and dropped; `year` and `UNITID` are included.
 
-## Data locations
+## Acceptance Checks
 
-The scripts operate directly on the Access databases located at:
-```
-/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS COMPLETE DATABASE/IPEDS DATABASE
-```
-Exports are written to:
-```
-/Users/markjaysonfarol13/Higher Ed research/IPEDS/IPEDS workspace/IPEDS EXPORTS
-```
-These paths are customizable via CLI options when needed.
+Syntax check:
 
-## Safety notes
+```bash
+python3 -m compileall ipeds
+```
 
-- The repository never stores `.mdb`/`.accdb` files or generated exports.
-- Finance tables differ by sector and accounting standards; relying on
-  `VARTABLE##` guarantees that the correct form (F1, F2, F3, etc.) is selected
-  for each combination of year and institution type.
+CSV fallback smoke test (no Java):
+- With one label (e.g., `Tuition and fees - Total`) and only a single exported
+  `exports/2023/VARTABLE23.csv` present, the script should run and either create
+  `ipeds_var_map_2004_2023.csv` with 2023 rows or warn about missing years if only
+  2023 is present.
+
+JDBC mode:
+- Using the Desktop DB folder above, the script should build the mapping without
+  complaining about missing JARs (assuming they exist in the configured folder).
+
+Both modes print resolved paths (`db-dir`, `out-dir`, `titles`, and
+`ucanaccess-lib` or `csv-vartable-root`).

@@ -12,12 +12,34 @@ import pandas as pd
 from map_ipeds_vars import (
     DEFAULT_DB_DIR,
     DEFAULT_OUT_DIR,
+    DEFAULT_TITLES,
     collect_jars,
     connect_to_database,
     determine_ucanaccess_lib,
 )
 
 DEFAULT_MAP_PATH = DEFAULT_OUT_DIR / "ipeds_var_map_2004_2023.csv"
+
+
+def parse_years(years: str | None, fallback_year: int | None = None) -> List[int]:
+    if years and years.strip():
+        parts = [p.strip() for p in years.split(",") if p.strip()]
+        result: set[int] = set()
+        for part in parts:
+            if "-" in part:
+                a, b = part.split("-", 1)
+                start, end = int(a), int(b)
+                if start > end:
+                    start, end = end, start
+                result.update(range(start, end + 1))
+            else:
+                result.add(int(part))
+        years_list = [y for y in result if 1900 <= y <= 2100]
+        years_list.sort()
+        return years_list
+    if fallback_year is not None:
+        return [fallback_year]
+    return []
 
 
 def load_mapping(map_path: Path, year: int) -> Dict[str, List[str]]:
@@ -81,7 +103,15 @@ def extract_table(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db-dir", type=Path, default=DEFAULT_DB_DIR, help="Directory with IPEDS databases")
-    parser.add_argument("--year", type=int, required=True, help="Year to extract")
+    parser.add_argument("--year", type=int, required=False, help="Year to extract (used if --years omitted)")
+    parser.add_argument(
+        "--years",
+        type=str,
+        default=None,
+        help=(
+            "Year range or comma list (e.g., 2004-2023 or 2019,2021,2023). If omitted, use --year."
+        ),
+    )
     parser.add_argument("--map-csv", type=Path, default=DEFAULT_MAP_PATH, help="Mapping CSV path")
     parser.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR, help="Output directory")
     parser.add_argument(
@@ -105,46 +135,60 @@ def main(argv: Sequence[str] | None = None) -> int:
         format="%(levelname)s: %(message)s",
     )
 
-    year = args.year
-    mapping = load_mapping(args.map_csv.expanduser().resolve(), year)
-
-    if args.tables.lower() != "all":
-        requested_tables = {table.strip() for table in args.tables.split(",") if table.strip()}
-        mapping = {table: columns for table, columns in mapping.items() if table in requested_tables}
-        missing_tables = requested_tables - mapping.keys()
-        for table in sorted(missing_tables):
-            logging.warning("No mapping found for table %s", table)
-
-    if not mapping:
-        logging.error("No tables to export for %s", year)
-        return 1
-
+    # Resolve common paths and echo configuration
+    out_dir = args.out_dir.expanduser().resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    map_csv = args.map_csv.expanduser().resolve()
     script_dir = Path(__file__).resolve().parent
     lib_dir = determine_ucanaccess_lib(args.ucanaccess_lib, script_dir)
+    logging.info("Resolved paths:")
+    logging.info("  db-dir: %s", args.db_dir.expanduser().resolve())
+    logging.info("  out-dir: %s", out_dir)
+    logging.info("  map-csv: %s", map_csv)
+    logging.info("  ucanaccess-lib: %s", lib_dir)
+
+    # Determine years list
+    years = parse_years(args.years, args.year)
+    if not years:
+        logging.error("No valid year(s) provided. Use --year or --years.")
+        return 1
+
     classpath = collect_jars(lib_dir)
-
     db_dir = args.db_dir.expanduser().resolve()
-    db_path = (db_dir / f"IPEDS{year}.accdb")
-    if not db_path.exists():
-        alternative = db_dir / f"IPEDS{year}.mdb"
-        if alternative.exists():
-            db_path = alternative
-        else:
-            logging.error("Database for %s not found in %s", year, db_dir)
-            return 1
-    db_path = db_path.resolve()
 
-    out_dir = args.out_dir.expanduser().resolve()
+    # Extract year by year
+    for year in years:
+        mapping = load_mapping(map_csv, year)
+        if args.tables.lower() != "all":
+            requested_tables = {table.strip() for table in args.tables.split(",") if table.strip()}
+            mapping = {table: columns for table, columns in mapping.items() if table in requested_tables}
+            missing_tables = requested_tables - mapping.keys()
+            for table in sorted(missing_tables):
+                logging.warning("No mapping found for table %s", table)
 
-    with connect_to_database(db_path, classpath) as connection:
-        for table_name, columns in sorted(mapping.items()):
-            extract_table(
-                connection,
-                year,
-                table_name,
-                columns,
-                out_dir,
-            )
+        if not mapping:
+            logging.warning("No tables to export for %s", year)
+            continue
+
+        db_path = db_dir / f"IPEDS{year}.accdb"
+        if not db_path.exists():
+            alternative = db_dir / f"IPEDS{year}.mdb"
+            if alternative.exists():
+                db_path = alternative
+            else:
+                logging.error("Database for %s not found in %s", year, db_dir)
+                continue
+        db_path = db_path.resolve()
+
+        with connect_to_database(db_path, classpath) as connection:
+            for table_name, columns in sorted(mapping.items()):
+                extract_table(
+                    connection,
+                    year,
+                    table_name,
+                    columns,
+                    out_dir,
+                )
 
     return 0
 

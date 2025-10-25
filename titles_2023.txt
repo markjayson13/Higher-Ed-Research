@@ -1,1 +1,2 @@
 # Add one variable title per line.
+Tuition and fees - Total
